@@ -89,10 +89,20 @@ const createStreamingLogClient = (baseUrl) => {
     }
   }).share()
 
+  /**
+    @typedef PublishManager
+    @type {object}
+    @function close
+
+    Publishes a stream of messages to the topic.
+    @param {string} topicName
+    @param {Observable<Buffer>} observable - Stream of items to emit
+
+  */
   const publish = (topicName, observable, options) => {
     if (typeof observable === 'string' || observable instanceof Buffer) {
       return publish(topicName, Observable.of(Buffer.from(observable)), options)
-    } else if (!(observable instanceof Observable)) {
+    } else if (!observable.subscribe) {
       throw new Error('publish requires Observable, string, or Buffer')
     }
     const events = new EventEmitter()
