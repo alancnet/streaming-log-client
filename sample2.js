@@ -1,8 +1,8 @@
 const { Subject } = require('rxjs')
 
-const { createStreamingLogClient } = require('.')
+const Client = require('.')
 
-const client = createStreamingLogClient('http://localhost:3000')
+const client = new Client('http://localhost:3000')
 
 const data = new Subject()
 client.publish('findme', data)

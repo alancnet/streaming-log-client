@@ -1,6 +1,6 @@
 {
   "name": "streaming-log-client",
-  "version": "0.0.4",
+  "version": "0.0.16",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -9,8 +9,11 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "base64-arraybuffer": "^0.1.5",
+    "fifo": "^2.3.0",
     "lodash": "^4.17.4",
     "request": "^2.81.0",
-    "rxjs": "^5.3.1"
+    "rxjs": "^5.3.1",
+    "ws": "^2.3.1"
   }
 }

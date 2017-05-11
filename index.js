@@ -1,14 +1,18 @@
 const _ = require('lodash')
-const { Observable } = require('rxjs')
+const { Observable, Subject, ReplaySubject } = require('rxjs')
 const request = require('request')
 const pkg = require('./package.json')
 const EventEmitter = require('events')
+const fifo = require('fifo')
+const WebSocket = require('ws')
+const { encode } = require('base64-arraybuffer')
 
-const createStreamingLogClient = (baseUrl) => {
+const versions = _.toPairs(process.versions).map(([key, value]) => `${key}/${value}`).join('; ')
+const userAgent = `${pkg.name}/${pkg.version} (${versions})`
+const events = new EventEmitter()
+
+const createRestClient = (baseUrl) => {
   if (!baseUrl) throw new Error('Provide baseUrl to streamingLogClient()')
-
-  const versions = _.toPairs(process.versions).map(([key, value]) => `${key}/${value}`).join('; ')
-  const userAgent = `${pkg.name}/${pkg.version} (${versions})`
 
   /**
     @typedef SubscribeOptions
@@ -110,7 +114,7 @@ const createStreamingLogClient = (baseUrl) => {
     const opts = _.defaults(options, {
       pageSize: 20
     })
-    const writeBuffer = []
+    const writeBuffer = fifo()
     var writing = false
     var req = null
     const evalWriteBuffer = () => {
@@ -118,7 +122,9 @@ const createStreamingLogClient = (baseUrl) => {
         if (writeBuffer.length) {
           writing = true
           setImmediate(() => {
-            const thisBuffer = writeBuffer.splice(0, opts.pageSize)
+            // writeBuffer.splice(0, opts.pageSize)
+            const thisBuffer = Array(opts.pageSize).fill(null)
+              .map(() => writeBuffer.shift()).filter((x) => x)
               .map((val) => Buffer.from(val))
 
             const contentLengths = thisBuffer.map((b) => b.length).join(',')
@@ -165,10 +171,122 @@ const createStreamingLogClient = (baseUrl) => {
     })
   }
 
-  return {
+  request(baseUrl, {
+    method: 'GET',
+    headers: {
+      'User-Agent': userAgent
+    }
+  }, (err, res, body) => {
+    if (err) events.emit('error', err)
+    else {
+      try {
+        JSON.parse(body).topicsUrl.toString()
+      } catch (err) {
+        return events.emit('error', err)
+      }
+      events.emit('open')
+    }
+  })
+
+  return Object.assign(events, {
     subscribe,
     publish
+  })
+}
+
+const createWebsocketClient = (url) => {
+  var aborted = false
+  const terminator = new ReplaySubject()
+  const events = new EventEmitter()
+  const ws = new WebSocket(url, {
+    headers: {
+      'User-Agent': userAgent
+    }
+  })
+  ws.on('error', (err) => {
+    events.emit('error', err)
+  })
+  ws.on('open', () => {
+    events.emit('open')
+  })
+  ws.on('close', () => {
+    aborted = true
+    terminator.next()
+  })
+  const close = () => {
+    aborted = true
+    terminator.next()
+  }
+  const incoming = new Subject()
+  const outgoing = new Subject()
+  ws.on('message', (data) => {
+    incoming.next(JSON.parse(data))
+  })
+  outgoing.takeUntil(terminator)
+    .subscribe((msg) => {
+      if (!aborted) {
+        const data = JSON.stringify(msg)
+        ws.send(data)
+      }
+    })
+  const subscribe = (topicName, options) => Observable.create((observer) => {
+    const opts = _.defaults(options, {
+      encoding: 'base64',
+      offset: 0
+    })
+    outgoing.next({
+      type: 'subscribe',
+      topic: topicName,
+      encoding: opts.encoding,
+      offset: opts.offset
+    })
+    const sub = incoming
+      .takeUntil(terminator)
+      .filter((m) => m.type === 'message' && m.topic === topicName)
+      .map((message) => _.omit(message, ['topic', 'type']))
+      .subscribe(observer)
+
+    return () => {
+      outgoing.next({
+        type: 'unsubscribe',
+        topic: topicName
+      })
+      sub.unsubscribe()
+    }
+  }).share()
+
+  const publish = (topicName, observable) => {
+    if (typeof observable === 'string' || observable instanceof Buffer) {
+      return publish(topicName, Observable.of(Buffer.from(observable)))
+    } else if (!observable.subscribe) {
+      throw new Error('publish requires Observable, string, or Buffer')
+    }
+    const events = new EventEmitter()
+    observable.takeUntil(terminator).subscribe((buffer) => {
+      outgoing.next({
+        type: 'publish',
+        topic: topicName,
+        encoding: 'base64',
+        value: encode(Buffer.from(buffer))
+      })
+    })
+    return events
+  }
+  return Object.assign(events, {
+    subscribe,
+    publish,
+    close
+  })
+}
+
+const create = function (url) {
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return createRestClient(url)
+  } else if (url.startsWith('ws://') || url.startsWith('wss://')) {
+    return createWebsocketClient(url)
+  } else {
+    throw new Error(`Unexpected URL scheme: ${url}`)
   }
 }
 
-module.exports = {createStreamingLogClient}
+module.exports = create
